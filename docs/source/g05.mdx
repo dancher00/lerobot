@@ -206,7 +206,9 @@ Generate the required `subtask` and grounded `vqa` language columns with
 `lerobot-annotate` as described in the
 [annotation pipeline](./annotation_pipeline). The built-in recipe reads the
 boxes annotated on the BBox camera: `--policy.cot_bbox_camera`, which defaults to
-the first non-empty camera slot. Pass an explicit external YAML through
+the first non-empty camera slot. Box coordinates must be `[0, 1]` fractions of
+the image width and height, which is what `lerobot-annotate` stores; pixel boxes
+are rejected. Pass an explicit external YAML through
 `--policy.recipe_path=/path/to/recipe.yaml` to train a different recipe; the
 selected recipe is serialized into the saved policy config.
 

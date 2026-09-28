@@ -1170,14 +1170,13 @@ def test_system2_recipe_bbox_and_subtask_use_checkpoint_field_order():
                 "role": "assistant",
                 "content": (
                     'BBoxJSON: {"detections": [{"label": "cup", "bbox_format": "xyxy", '
-                    '"bbox": [20, 10, 100, 50]}]}'
+                    '"bbox": [0.1, 0.1, 0.5, 0.5]}]}'
                 ),
             },
             {"role": "assistant", "content": "Subtask: grasp the cup"},
         ]
     ]
     batch["target_message_indices"] = [[1, 2]]
-    batch["g05_bbox_image_size"] = (100, 200)
 
     sample = policy._prepare_author_batch(batch)["samples"][0]
 
@@ -1231,7 +1230,7 @@ def test_recipe_preprocessor_resolves_lerobot_subtask_and_bbox_annotations():
             {
                 "role": "assistant",
                 "content": (
-                    '{"detections": [{"label": "cup", "bbox_format": "xyxy", "bbox": [20, 10, 100, 50]}]}'
+                    '{"detections": [{"label": "cup", "bbox_format": "xyxy", "bbox": [0.1, 0.1, 0.5, 0.5]}]}'
                 ),
                 "style": "vqa",
                 "camera": "observation.images.image",
@@ -1931,3 +1930,28 @@ def test_mrope_positions_are_built_on_the_host_and_returned_on_the_token_device(
         [0, 0, 1, 2, 2, 3, 3, 4],
         [0, 0, 1, 2, 3, 2, 3, 4],
     ]
+
+
+@pytest.mark.parametrize(
+    ("detection", "expected"),
+    [
+        (
+            {"label": "cube", "bbox_format": "xyxy", "bbox": [0.7, 0.39, 0.87, 0.61]},
+            "BBox: cube <loc0399><loc0717><loc0625><loc0891>",
+        ),
+        (
+            {"label": "cube", "bbox_format": "xywh", "bbox": [0.7, 0.39, 0.17, 0.22]},
+            "BBox: cube <loc0399><loc0717><loc0625><loc0891>",
+        ),
+    ],
+)
+def test_bbox_targets_read_unit_coordinates_in_either_box_format(detection, expected):
+    assert G05Policy._format_bbox_target(json.dumps({"detections": [detection]})) == expected
+
+
+def test_bbox_targets_reject_pixel_coordinates():
+    pixels = json.dumps(
+        {"detections": [{"label": "cube", "bbox_format": "xyxy", "bbox": [448, 187.2, 556.8, 292.8]}]}
+    )
+    with pytest.raises(ValueError, match=r"\[0, 1\] image-fraction"):
+        G05Policy._format_bbox_target(pixels)

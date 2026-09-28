@@ -90,40 +90,6 @@ def _copy_feature_tree(
 
 
 @dataclass
-@ProcessorStepRegistry.register(name="g05_bbox_image_size")
-class G05BBoxImageSizeStep(ProcessorStep):
-    """Preserve the annotated camera's source size before checkpoint resizing."""
-
-    # Filled from the live config by `reconcile_g05_processors`.
-    camera_key: str = "observation.images.exterior"
-
-    def __call__(self, transition: EnvTransition) -> EnvTransition:
-        """Record the annotated camera's pixel size before the checkpoint resize discards it."""
-        observation = transition.get(TransitionKey.OBSERVATION) or {}
-        image = observation.get(self.camera_key)
-        if image is None:
-            return transition
-        image = torch.as_tensor(image)
-        if image.ndim < 3:
-            raise ValueError(f"G0.5 bbox camera {self.camera_key!r} has invalid shape {image.shape}.")
-        transition = transition.copy()
-        complementary = dict(transition.get(TransitionKey.COMPLEMENTARY_DATA) or {})
-        complementary["g05_bbox_image_size"] = (int(image.shape[-2]), int(image.shape[-1]))
-        transition[TransitionKey.COMPLEMENTARY_DATA] = complementary
-        return transition
-
-    def transform_features(
-        self, features: dict[PipelineFeatureType, dict[str, PolicyFeature]]
-    ) -> dict[PipelineFeatureType, dict[str, PolicyFeature]]:
-        """Pass the feature contract through unchanged."""
-        return features
-
-    def get_config(self) -> dict[str, Any]:
-        """Return this step's serializable configuration."""
-        return {"camera_key": self.camera_key}
-
-
-@dataclass
 class _G05JointFrameMixin:
     """Per-joint affine between the physical-arm frame and the checkpoint frame.
 
@@ -859,15 +825,12 @@ def reconcile_g05_processors(
     stores its training renderer with no recipe, and a fine-tune that turns the
     recipe on (or off) switches it here instead of rebuilding the pipeline.
     """
-    camera_key = config.bbox_camera
     if config.language_recipe_enabled and config.recipe is None:
         raise ValueError("G0.5 language training requires a recipe in policy config.")
     for index, step in enumerate(preprocessor.steps):
         if isinstance(step, RenderTrainingMessagesStep):
             recipe = config.recipe if config.language_recipe_enabled else None
             preprocessor.steps[index] = RenderTrainingMessagesStep(recipe, dataset_ctx=step.dataset_ctx)
-        if camera_key is not None and isinstance(step, G05BBoxImageSizeStep):
-            step.camera_key = camera_key
         if isinstance(step, G05TokenizerStep):
             step.policy_config = _tokenizer_policy_config(config)
     return preprocessor, postprocessor
@@ -965,7 +928,6 @@ def make_g05_pre_post_processors(
         RenderRuntimeMessagesStep(config.recipe),
         RenderTrainingMessagesStep(config.recipe if render_training else None),
         RenameObservationsProcessorStep(rename_map={}),
-        G05BBoxImageSizeStep(camera_key=config.bbox_camera),
         AddBatchDimensionProcessorStep(),
     ]
     steps.append(
