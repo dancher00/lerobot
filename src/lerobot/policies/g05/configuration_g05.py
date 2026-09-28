@@ -371,10 +371,10 @@ class G05Config(PreTrainedConfig):
             if _DEFAULT_BBOX_BINDING.fullmatch(bindings.get("bbox", "")):
                 # The built-in recipe reads the boxes annotated on the bbox camera.
                 self.recipe["bindings"] = {**bindings, "bbox": _bbox_binding(self.bbox_camera)}
-        if self.num_input_images == 0:
-            self.num_input_images = len(self.camera_order) * self.n_obs_steps
-        if self.num_prompt_images == 0:
-            self.num_prompt_images = len(self.camera_order)
+        # Both follow from the camera slots and the history length; a saved value would go
+        # stale when a fine-tune changes either (e.g. `n_obs_steps=1` on the 6-step base).
+        self.num_input_images = len(self.camera_order) * self.n_obs_steps
+        self.num_prompt_images = len(self.camera_order)
         if not self.prompt_template:
             samples_builder = self.processor_metadata.get("samples_builder") or {}
             if isinstance(samples_builder, dict):
@@ -431,12 +431,6 @@ class G05Config(PreTrainedConfig):
             raise ValueError("optional_camera_keys must be a subset of camera_order.")
         if self.cot_bbox_camera is not None and self.cot_bbox_camera not in self.camera_order:
             raise ValueError("cot_bbox_camera must be one of camera_order.")
-        if self.num_input_images != len(self.camera_order) * self.n_obs_steps:
-            raise ValueError(
-                "num_input_images must equal len(camera_order) * n_obs_steps for the selected checkpoint."
-            )
-        if self.num_prompt_images != len(self.camera_order):
-            raise ValueError("num_prompt_images must equal len(camera_order).")
         if any(len(size) != 2 or min(size) <= 0 for size in self.camera_sizes.values()):
             raise ValueError("Every G0.5 camera size must be a positive (height, width) pair.")
         if len(self.image_mean) != 3 or len(self.image_std) != 3 or min(self.image_std) <= 0:

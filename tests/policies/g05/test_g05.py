@@ -1955,3 +1955,9 @@ def test_bbox_targets_reject_pixel_coordinates():
     )
     with pytest.raises(ValueError, match=r"\[0, 1\] image-fraction"):
         G05Policy._format_bbox_target(pixels)
+
+
+def test_image_counts_follow_the_history_length_not_the_saved_values():
+    config = _new_robot_config(n_obs_steps=1, num_input_images=18, num_prompt_images=3)
+
+    assert (config.num_input_images, config.num_prompt_images) == (3, 3)
