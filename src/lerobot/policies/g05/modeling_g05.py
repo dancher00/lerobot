@@ -1001,20 +1001,20 @@ class G05NativeBackend(nn.Module):
         return embeddings
 
     def _mrope_positions(self, token_types: Tensor) -> Tensor:
-        """Build multimodal rotary position ids from the token types."""
+        """Build multimodal rotary position ids from the token types.
+
+        The ids are built on the host from one copy of the token types: walking the segments
+        on the device would block on a device-to-host sync at every text segment.
+        """
         batch_size, sequence_length = token_types.shape
-        positions = torch.zeros(
-            3,
-            batch_size,
-            sequence_length,
-            dtype=torch.long,
-            device=token_types.device,
-        )
+        device = token_types.device
+        host_types = token_types.detach().cpu()
+        positions = torch.zeros(3, batch_size, sequence_length, dtype=torch.long)
         position_mode = str(self.model_config.get("position_ids_type", "pi0fast"))
         for batch_index in range(batch_size):
             cursor = 0
             grid_index = 0
-            values = token_types[batch_index].detach().cpu().tolist()
+            values = host_types[batch_index].tolist()
             for token_type, entries in itertools.groupby(enumerate(values), key=lambda item: item[1]):
                 entries = list(entries)
                 start, stop = entries[0][0], entries[-1][0] + 1
@@ -1028,11 +1028,8 @@ class G05NativeBackend(nn.Module):
                     grid_index += 1
                     merge = int(self.model_config["vision"]["spatial_merge_size"])
                     grid_h, grid_w = raw_h // merge, raw_w // merge
-                    height = (
-                        torch.arange(grid_h, device=token_types.device).repeat_interleave(grid_w)[:length]
-                        + cursor
-                    )
-                    width = torch.arange(grid_w, device=token_types.device).repeat(grid_h)[:length] + cursor
+                    height = torch.arange(grid_h).repeat_interleave(grid_w)[:length] + cursor
+                    width = torch.arange(grid_w).repeat(grid_h)[:length] + cursor
                     positions[0, batch_index, start:stop] = cursor
                     positions[1, batch_index, start:stop] = height
                     positions[2, batch_index, start:stop] = width
@@ -1046,20 +1043,19 @@ class G05NativeBackend(nn.Module):
                                 mean=2.0,
                                 std=0.5,
                                 size=(length,),
-                                device=token_types.device,
                             )
                             .round()
                             .clamp(1, 3)
                             .long()
                         )
                     else:
-                        steps = torch.full((length,), 2, dtype=torch.long, device=token_types.device)
+                        steps = torch.full((length,), 2, dtype=torch.long)
                 else:
-                    steps = torch.ones(length, dtype=torch.long, device=token_types.device)
+                    steps = torch.ones(length, dtype=torch.long)
                 text_positions = cursor + steps.cumsum(0) - steps[0]
                 positions[:, batch_index, start:stop] = text_positions
                 cursor = int(text_positions[-1]) + int(steps[-1])
-        return positions
+        return positions.to(device)
 
     @staticmethod
     def _causal_mask(token_types: Tensor, dtype: torch.dtype) -> tuple[Tensor, Tensor]:

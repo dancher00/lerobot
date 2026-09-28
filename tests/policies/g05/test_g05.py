@@ -44,6 +44,7 @@ from lerobot.policies.g05.configuration_g05 import (
     G05_EMBODIMENT_MAPPINGS,
     G05Config,
     derive_g05_slots,
+    make_g05_prompt_template,
 )
 from lerobot.policies.g05.modeling_g05 import (
     G05_RUNTIME_PREDICT_COT,
@@ -64,6 +65,7 @@ from lerobot.policies.g05.tokenizer_g05 import (
     G05_LABELS,
     G05_SPLIT_INDEX,
     G05_TOKEN_TYPES,
+    G05Tokenizer,
     G05TokenType,
 )
 from lerobot.policies.pretrained import PreTrainedPolicy
@@ -1843,3 +1845,89 @@ def test_relative_anchor_uses_the_last_proprio_history_step():
     history = torch.stack([torch.full((6,), float(i)) for i in (1, 2, 3)])
     step(create_transition(observation={OBS_STATE: history}))
     assert torch.equal(step.get_cached_state(), torch.full((6,), 3.0))
+
+
+class _CharTokenizer:
+    """Stands in for the checkpoint's text tokenizer: one id per character."""
+
+    def __call__(self, text, add_special_tokens=False):
+        return {"input_ids": [ord(char) for char in text]}
+
+    def convert_tokens_to_ids(self, token):
+        return 1
+
+
+def _char_g05_tokenizer() -> G05Tokenizer:
+    tokenizer = object.__new__(G05Tokenizer)
+    tokenizer.tokenizer = _CharTokenizer()
+    tokenizer.model_config = {"vision": {"patch_size": 16, "spatial_merge_size": 2}}
+    tokenizer.pad_token_id, tokenizer.image_token_id, tokenizer.state_token_id = 0, 2, 5
+    tokenizer.vision_start_token_id, tokenizer.vision_end_token_id = 3, 4
+    return tokenizer
+
+
+class _BatchCountingCodec:
+    def __init__(self):
+        self.batch_calls = 0
+
+    def encode_for_language(self, payload):
+        return [100 + int(value) for value in payload["value"].flatten()[:3].tolist()]
+
+    def encode_batch_for_language(self, payloads):
+        self.batch_calls += 1
+        return [self.encode_for_language(payload) for payload in payloads]
+
+
+def test_training_sequences_encode_actions_in_one_batch_like_one_at_a_time():
+    templates = [
+        make_g05_prompt_template(1, predict_cot=True, flow_only=False),
+        make_g05_prompt_template(1, predict_cot=False, flow_only=True),
+        make_g05_prompt_template(1, predict_cot=True, flow_only=False),
+    ]
+    samples = [
+        {
+            "template": template,
+            "image0": (32, 32),
+            "embodiment": "omx",
+            "command": f"task {index}",
+            "proprio": {"value": torch.zeros(1, 6)},
+            "prompt": "predict subtask",
+            "atomic_task": f"Subtask: step {index}",
+            "action": {"value": torch.full((4, 6), float(index + 1))},
+        }
+        for index, template in enumerate(templates)
+    ]
+    codec = _BatchCountingCodec()
+    tokenizer = _char_g05_tokenizer()
+
+    batched = tokenizer.encode_train(samples, device=torch.device("cpu"), action_codec=codec)
+    one_at_a_time = tokenizer.encode_train(
+        samples,
+        device=torch.device("cpu"),
+        action_codec=SimpleNamespace(encode_for_language=codec.encode_for_language),
+    )
+
+    assert codec.batch_calls == 1
+    for name in ("input_ids", "labels", "token_types"):
+        assert torch.equal(getattr(batched, name), getattr(one_at_a_time, name)), name
+    assert batched.split_index == one_at_a_time.split_index
+    assert (batched.token_types == G05TokenType.ACTION).sum(dim=1).tolist() == [3, 0, 3]
+
+
+def test_mrope_positions_are_built_on_the_host_and_returned_on_the_token_device():
+    text, image, pad = G05TokenType.TEXT, G05TokenType.IMAGE, G05TokenType.PADDING
+    token_types = torch.tensor([[pad, text, text, image, image, image, image, text]], dtype=torch.float32)
+    backend = SimpleNamespace(
+        model_config={"vision": {"spatial_merge_size": 2}},
+        _last_vision_grids=[(1, 4, 4)],
+        training=False,
+    )
+
+    positions = G05NativeBackend._mrope_positions(backend, token_types)
+
+    assert positions.device == token_types.device and positions.dtype == torch.long
+    assert positions[:, 0].tolist() == [
+        [0, 0, 1, 2, 2, 2, 2, 4],
+        [0, 0, 1, 2, 2, 3, 3, 4],
+        [0, 0, 1, 2, 3, 2, 3, 4],
+    ]
